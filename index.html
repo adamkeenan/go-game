@@ -43,6 +43,7 @@
       const [markedDead, setMarkedDead] = useState(new Set());
       const [showPassConfirm, setShowPassConfirm] = useState(false);
       const [finalScore, setFinalScore] = useState(null);
+      const [history, setHistory] = useState([]);
 
       // Get all connected stones of the same color (flood fill)
       const getGroup = useCallback((boardState, row, col, color, visited = new Set()) => {
@@ -108,6 +109,19 @@
         return boardState.map(row => [...row]);
       }, []);
 
+      // Save current state to history (before applying a move)
+      const saveToHistory = useCallback(() => {
+        setHistory(prev => [...prev, {
+          board: copyBoard(board),
+          currentPlayer,
+          captures: { ...captures },
+          previousBoard: previousBoard ? copyBoard(previousBoard) : null,
+          consecutivePasses,
+          gamePhase,
+          markedDead: Array.from(markedDead)
+        }]);
+      }, [board, currentPlayer, captures, previousBoard, consecutivePasses, gamePhase, markedDead, copyBoard]);
+
       // Try to place a stone and return the new board state (or null if invalid)
       const tryPlaceStone = useCallback((boardState, row, col, color) => {
         if (boardState[row][col] !== EMPTY) return null;
@@ -171,7 +185,8 @@
         // Check ko rule
         if (boardsEqual(newBoard, previousBoard)) return;
 
-        // Valid move - update state
+        // Valid move - save to history, then update state
+        saveToHistory();
         setPreviousBoard(copyBoard(board));
         setBoard(newBoard);
         setCaptures(prev => ({
@@ -180,13 +195,14 @@
         }));
         setCurrentPlayer(currentPlayer === BLACK ? WHITE : BLACK);
         setConsecutivePasses(0);
-      }, [board, currentPlayer, gamePhase, previousBoard, tryPlaceStone, boardsEqual, copyBoard]);
+      }, [board, currentPlayer, gamePhase, previousBoard, tryPlaceStone, boardsEqual, copyBoard, saveToHistory]);
 
       // Pass turn
       const handlePass = useCallback(() => {
         if (gamePhase !== PLAYING) return;
         
         setShowPassConfirm(false);
+        saveToHistory();
         const newPasses = consecutivePasses + 1;
         
         if (newPasses >= 2) {
@@ -196,13 +212,14 @@
           setConsecutivePasses(newPasses);
           setCurrentPlayer(currentPlayer === BLACK ? WHITE : BLACK);
         }
-      }, [gamePhase, consecutivePasses, currentPlayer]);
+      }, [gamePhase, consecutivePasses, currentPlayer, saveToHistory]);
 
       // Toggle dead stone marking
       const toggleDeadStone = useCallback((row, col) => {
         if (gamePhase !== STONE_REMOVAL) return;
         if (board[row][col] === EMPTY) return;
 
+        saveToHistory();
         // Get the entire group
         const group = getGroup(board, row, col, board[row][col]);
         const newMarked = new Set(markedDead);
@@ -221,7 +238,7 @@
         }
 
         setMarkedDead(newMarked);
-      }, [gamePhase, board, markedDead, getGroup]);
+      }, [gamePhase, board, markedDead, getGroup, saveToHistory]);
 
       // Calculate territory using flood fill
       const calculateTerritory = useCallback((boardState, deadStones) => {
@@ -287,6 +304,7 @@
 
       // Finalize score
       const finalizeScore = useCallback(() => {
+        saveToHistory();
         // Count dead stones as prisoners
         let blackDeadCount = 0;
         let whiteDeadCount = 0;
@@ -320,7 +338,23 @@
         });
 
         setGamePhase(GAME_OVER);
-      }, [board, markedDead, captures, calculateTerritory]);
+      }, [board, markedDead, captures, calculateTerritory, saveToHistory]);
+
+      // Undo last move
+      const handleUndo = useCallback(() => {
+        if (history.length === 0) return;
+        const prevState = history[history.length - 1];
+        setHistory(prev => prev.slice(0, -1));
+        setBoard(prevState.board);
+        setCurrentPlayer(prevState.currentPlayer);
+        setCaptures(prevState.captures);
+        setPreviousBoard(prevState.previousBoard);
+        setConsecutivePasses(prevState.consecutivePasses);
+        setGamePhase(prevState.gamePhase);
+        setMarkedDead(new Set(prevState.markedDead));
+        setShowPassConfirm(false);
+        setFinalScore(null);
+      }, [history]);
 
       // New game
       const newGame = useCallback(() => {
@@ -333,6 +367,7 @@
         setMarkedDead(new Set());
         setShowPassConfirm(false);
         setFinalScore(null);
+        setHistory([]);
       }, []);
 
       // Handle intersection click
@@ -564,6 +599,13 @@
                   </div>
                 )}
                 <button
+                  onClick={handleUndo}
+                  disabled={history.length === 0}
+                  className="px-6 py-2 bg-slate-700/80 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-slate-100 rounded-lg transition-all text-sm font-medium shadow-lg"
+                >
+                  Undo
+                </button>
+                <button
                   onClick={newGame}
                   className="px-6 py-2 bg-slate-700/80 hover:bg-slate-600 text-slate-100 rounded-lg transition-all text-sm font-medium shadow-lg"
                 >
@@ -578,6 +620,13 @@
                   Tap stone groups to mark them as dead
                 </p>
                 <div className="flex gap-3">
+                  <button
+                    onClick={handleUndo}
+                    disabled={history.length === 0}
+                    className="px-6 py-2 bg-slate-700/80 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-slate-100 rounded-lg transition-all text-sm font-medium shadow-lg"
+                  >
+                    Undo
+                  </button>
                   <button
                     onClick={finalizeScore}
                     className="px-6 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg transition-all text-sm font-medium shadow-lg"
@@ -641,12 +690,21 @@
                   </div>
                 </div>
 
-                <button
-                  onClick={newGame}
-                  className="w-full px-6 py-3 bg-amber-700 hover:bg-amber-600 text-white rounded-lg transition-all font-medium shadow-lg"
-                >
-                  Play Again
-                </button>
+                <div className="flex gap-3">
+                  <button
+                    onClick={handleUndo}
+                    disabled={history.length === 0}
+                    className="flex-1 px-6 py-3 bg-slate-700/80 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-slate-100 rounded-lg transition-all font-medium shadow-lg"
+                  >
+                    Undo
+                  </button>
+                  <button
+                    onClick={newGame}
+                    className="flex-1 px-6 py-3 bg-amber-700 hover:bg-amber-600 text-white rounded-lg transition-all font-medium shadow-lg"
+                  >
+                    Play Again
+                  </button>
+                </div>
               </div>
             )}
           </div>
