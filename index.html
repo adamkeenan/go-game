@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Go Game - 9×9</title>
+  <title>Go Game</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -12,77 +12,125 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body, #root { height: 100%; width: 100%; }
     body { font-family: system-ui, -apple-system, sans-serif; }
+    input[type=range] { cursor: pointer; }
   </style>
 </head>
 <body>
   <div id="root"></div>
-  
+
   <script type="text/babel">
     const { useState, useCallback, useMemo } = React;
 
-    const BOARD_SIZE = 9;
-    const KOMI = 6.5;
     const EMPTY = null;
     const BLACK = 'black';
     const WHITE = 'white';
 
     // Game phases
+    const SETUP = 'setup';
     const PLAYING = 'playing';
     const STONE_REMOVAL = 'stone_removal';
     const GAME_OVER = 'game_over';
 
+    // Star points and handicap placement order per board size
+    function getBoardInfo(boardSize) {
+      if (boardSize === 9) {
+        return {
+          starPoints: [
+            { row: 2, col: 2 }, { row: 2, col: 6 },
+            { row: 6, col: 2 }, { row: 6, col: 6 },
+            { row: 4, col: 4 }
+          ],
+          // Standard handicap placement order for 9x9
+          handicapPoints: [
+            { row: 2, col: 6 }, // 1 - upper right
+            { row: 6, col: 2 }, // 2 - lower left
+            { row: 6, col: 6 }, // 3 - lower right
+            { row: 2, col: 2 }, // 4 - upper left
+            { row: 4, col: 4 }, // 5 - center
+            { row: 2, col: 4 }, // 6 - upper middle
+            { row: 4, col: 2 }, // 7 - middle left
+            { row: 4, col: 6 }, // 8 - middle right
+            { row: 6, col: 4 }, // 9 - lower middle
+          ]
+        };
+      } else {
+        // 13x13: star points at rows/cols 3, 6, 9 (0-indexed)
+        return {
+          starPoints: [
+            { row: 3, col: 3 }, { row: 3, col: 6 }, { row: 3, col: 9 },
+            { row: 6, col: 3 }, { row: 6, col: 6 }, { row: 6, col: 9 },
+            { row: 9, col: 3 }, { row: 9, col: 6 }, { row: 9, col: 9 },
+          ],
+          // Standard handicap placement order for 13x13
+          handicapPoints: [
+            { row: 3, col: 9 },  // 1 - upper right
+            { row: 9, col: 3 },  // 2 - lower left
+            { row: 9, col: 9 },  // 3 - lower right
+            { row: 3, col: 3 },  // 4 - upper left
+            { row: 6, col: 6 },  // 5 - center
+            { row: 3, col: 6 },  // 6 - upper middle
+            { row: 6, col: 3 },  // 7 - middle left
+            { row: 6, col: 9 },  // 8 - middle right
+            { row: 9, col: 6 },  // 9 - lower middle
+          ]
+        };
+      }
+    }
+
     function GoGame() {
-      const [board, setBoard] = useState(() => 
-        Array(BOARD_SIZE).fill(null).map(() => Array(BOARD_SIZE).fill(EMPTY))
+      // Setup settings
+      const [boardSize, setBoardSize] = useState(9);
+      const [komi, setKomi] = useState(6.5);
+      const [handicap, setHandicap] = useState(0);
+
+      // Game state
+      const [board, setBoard] = useState(() =>
+        Array(9).fill(null).map(() => Array(9).fill(EMPTY))
       );
       const [currentPlayer, setCurrentPlayer] = useState(BLACK);
       const [captures, setCaptures] = useState({ black: 0, white: 0 });
       const [previousBoard, setPreviousBoard] = useState(null);
       const [consecutivePasses, setConsecutivePasses] = useState(0);
-      const [gamePhase, setGamePhase] = useState(PLAYING);
+      const [gamePhase, setGamePhase] = useState(SETUP);
       const [markedDead, setMarkedDead] = useState(new Set());
       const [showPassConfirm, setShowPassConfirm] = useState(false);
       const [finalScore, setFinalScore] = useState(null);
       const [history, setHistory] = useState([]);
 
       // Get all connected stones of the same color (flood fill)
-      const getGroup = useCallback((boardState, row, col, color, visited = new Set()) => {
+      const getGroup = useCallback((boardState, row, col, color, bs, visited = new Set()) => {
         const key = `${row},${col}`;
         if (visited.has(key)) return [];
-        if (row < 0 || row >= BOARD_SIZE || col < 0 || col >= BOARD_SIZE) return [];
+        if (row < 0 || row >= bs || col < 0 || col >= bs) return [];
         if (boardState[row][col] !== color) return [];
 
         visited.add(key);
         const group = [{ row, col }];
-        
+
         const neighbors = [
-          [row - 1, col],
-          [row + 1, col],
-          [row, col - 1],
-          [row, col + 1]
+          [row - 1, col], [row + 1, col],
+          [row, col - 1], [row, col + 1]
         ];
 
         for (const [nr, nc] of neighbors) {
-          group.push(...getGroup(boardState, nr, nc, color, visited));
+          group.push(...getGroup(boardState, nr, nc, color, bs, visited));
         }
 
         return group;
       }, []);
 
       // Count liberties for a group
-      const countLiberties = useCallback((boardState, group) => {
+      const countLiberties = useCallback((boardState, group, bs) => {
         const liberties = new Set();
-        
+
         for (const { row, col } of group) {
           const neighbors = [
-            [row - 1, col],
-            [row + 1, col],
-            [row, col - 1],
-            [row, col + 1]
+            [row - 1, col], [row + 1, col],
+            [row, col - 1], [row, col + 1]
           ];
 
           for (const [nr, nc] of neighbors) {
-            if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE) {
+            if (nr >= 0 && nr < bs && nc >= 0 && nc < bs) {
               if (boardState[nr][nc] === EMPTY) {
                 liberties.add(`${nr},${nc}`);
               }
@@ -94,10 +142,10 @@
       }, []);
 
       // Check if boards are equal (for ko rule)
-      const boardsEqual = useCallback((board1, board2) => {
+      const boardsEqual = useCallback((board1, board2, bs) => {
         if (!board1 || !board2) return false;
-        for (let i = 0; i < BOARD_SIZE; i++) {
-          for (let j = 0; j < BOARD_SIZE; j++) {
+        for (let i = 0; i < bs; i++) {
+          for (let j = 0; j < bs; j++) {
             if (board1[i][j] !== board2[i][j]) return false;
           }
         }
@@ -123,7 +171,7 @@
       }, [board, currentPlayer, captures, previousBoard, consecutivePasses, gamePhase, markedDead, copyBoard]);
 
       // Try to place a stone and return the new board state (or null if invalid)
-      const tryPlaceStone = useCallback((boardState, row, col, color) => {
+      const tryPlaceStone = useCallback((boardState, row, col, color, bs) => {
         if (boardState[row][col] !== EMPTY) return null;
 
         const newBoard = copyBoard(boardState);
@@ -132,25 +180,21 @@
         const opponent = color === BLACK ? WHITE : BLACK;
         let capturedStones = 0;
 
-        // Check all adjacent opponent groups for capture
         const neighbors = [
-          [row - 1, col],
-          [row + 1, col],
-          [row, col - 1],
-          [row, col + 1]
+          [row - 1, col], [row + 1, col],
+          [row, col - 1], [row, col + 1]
         ];
 
         const checkedGroups = new Set();
         for (const [nr, nc] of neighbors) {
-          if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE) {
+          if (nr >= 0 && nr < bs && nc >= 0 && nc < bs) {
             if (newBoard[nr][nc] === opponent) {
               const groupKey = `${nr},${nc}`;
               if (!checkedGroups.has(groupKey)) {
-                const group = getGroup(newBoard, nr, nc, opponent);
+                const group = getGroup(newBoard, nr, nc, opponent, bs);
                 group.forEach(g => checkedGroups.add(`${g.row},${g.col}`));
-                
-                if (countLiberties(newBoard, group) === 0) {
-                  // Capture this group
+
+                if (countLiberties(newBoard, group, bs) === 0) {
                   for (const { row: gr, col: gc } of group) {
                     newBoard[gr][gc] = EMPTY;
                     capturedStones++;
@@ -161,10 +205,8 @@
           }
         }
 
-        // Check if the placed stone's group has liberties (suicide rule)
-        const ownGroup = getGroup(newBoard, row, col, color);
-        if (countLiberties(newBoard, ownGroup) === 0) {
-          // Suicide move - only allowed if it captured something
+        const ownGroup = getGroup(newBoard, row, col, color, bs);
+        if (countLiberties(newBoard, ownGroup, bs) === 0) {
           if (capturedStones === 0) {
             return null;
           }
@@ -177,15 +219,13 @@
       const placeStone = useCallback((row, col) => {
         if (gamePhase !== PLAYING) return;
 
-        const result = tryPlaceStone(board, row, col, currentPlayer);
-        if (!result) return; // Invalid move
+        const result = tryPlaceStone(board, row, col, currentPlayer, boardSize);
+        if (!result) return;
 
         const { newBoard, capturedStones } = result;
 
-        // Check ko rule
-        if (boardsEqual(newBoard, previousBoard)) return;
+        if (boardsEqual(newBoard, previousBoard, boardSize)) return;
 
-        // Valid move - save to history, then update state
         saveToHistory();
         setPreviousBoard(copyBoard(board));
         setBoard(newBoard);
@@ -195,18 +235,17 @@
         }));
         setCurrentPlayer(currentPlayer === BLACK ? WHITE : BLACK);
         setConsecutivePasses(0);
-      }, [board, currentPlayer, gamePhase, previousBoard, tryPlaceStone, boardsEqual, copyBoard, saveToHistory]);
+      }, [board, currentPlayer, gamePhase, previousBoard, boardSize, tryPlaceStone, boardsEqual, copyBoard, saveToHistory]);
 
       // Pass turn
       const handlePass = useCallback(() => {
         if (gamePhase !== PLAYING) return;
-        
+
         setShowPassConfirm(false);
         saveToHistory();
         const newPasses = consecutivePasses + 1;
-        
+
         if (newPasses >= 2) {
-          // Both players passed - enter stone removal phase
           setGamePhase(STONE_REMOVAL);
         } else {
           setConsecutivePasses(newPasses);
@@ -220,11 +259,9 @@
         if (board[row][col] === EMPTY) return;
 
         saveToHistory();
-        // Get the entire group
-        const group = getGroup(board, row, col, board[row][col]);
+        const group = getGroup(board, row, col, board[row][col], boardSize);
         const newMarked = new Set(markedDead);
 
-        // Toggle all stones in the group
         const firstKey = `${group[0].row},${group[0].col}`;
         const isCurrentlyMarked = markedDead.has(firstKey);
 
@@ -238,10 +275,10 @@
         }
 
         setMarkedDead(newMarked);
-      }, [gamePhase, board, markedDead, getGroup, saveToHistory]);
+      }, [gamePhase, board, markedDead, boardSize, getGroup, saveToHistory]);
 
       // Calculate territory using flood fill
-      const calculateTerritory = useCallback((boardState, deadStones) => {
+      const calculateTerritory = useCallback((boardState, deadStones, bs) => {
         const visited = new Set();
         const territory = { black: 0, white: 0 };
 
@@ -256,7 +293,7 @@
             const key = `${row},${col}`;
 
             if (localVisited.has(key)) continue;
-            if (row < 0 || row >= BOARD_SIZE || col < 0 || col >= BOARD_SIZE) continue;
+            if (row < 0 || row >= bs || col < 0 || col >= bs) continue;
 
             const stone = boardState[row][col];
             const isDead = deadStones.has(key);
@@ -274,10 +311,8 @@
             stack.push([row - 1, col], [row + 1, col], [row, col - 1], [row, col + 1]);
           }
 
-          // Mark all visited points as globally visited
           localVisited.forEach(k => visited.add(k));
 
-          // Only count territory if bordered by exactly one color
           if (borderingColors.size === 1) {
             const owner = [...borderingColors][0];
             return { owner, points: emptyPoints.length };
@@ -286,8 +321,8 @@
           return { owner: null, points: 0 };
         };
 
-        for (let row = 0; row < BOARD_SIZE; row++) {
-          for (let col = 0; col < BOARD_SIZE; col++) {
+        for (let row = 0; row < bs; row++) {
+          for (let col = 0; col < bs; col++) {
             const key = `${row},${col}`;
             if (visited.has(key)) continue;
             if (boardState[row][col] !== EMPTY) continue;
@@ -305,7 +340,6 @@
       // Finalize score
       const finalizeScore = useCallback(() => {
         saveToHistory();
-        // Count dead stones as prisoners
         let blackDeadCount = 0;
         let whiteDeadCount = 0;
 
@@ -315,12 +349,10 @@
           if (board[row][col] === WHITE) whiteDeadCount++;
         });
 
-        // Calculate territory
-        const territory = calculateTerritory(board, markedDead);
+        const territory = calculateTerritory(board, markedDead, boardSize);
 
-        // Japanese scoring: Territory + Prisoners
         const blackScore = territory.black + captures.black + whiteDeadCount;
-        const whiteScore = territory.white + captures.white + blackDeadCount + KOMI;
+        const whiteScore = territory.white + captures.white + blackDeadCount + komi;
 
         setFinalScore({
           black: {
@@ -331,14 +363,14 @@
           white: {
             territory: territory.white,
             prisoners: captures.white + blackDeadCount,
-            komi: KOMI,
+            komi: komi,
             total: whiteScore
           },
           winner: blackScore > whiteScore ? BLACK : (whiteScore > blackScore ? WHITE : 'tie')
         });
 
         setGamePhase(GAME_OVER);
-      }, [board, markedDead, captures, calculateTerritory, saveToHistory]);
+      }, [board, markedDead, captures, boardSize, komi, calculateTerritory, saveToHistory]);
 
       // Undo last move
       const handleUndo = useCallback(() => {
@@ -356,10 +388,19 @@
         setFinalScore(null);
       }, [history]);
 
-      // New game
-      const newGame = useCallback(() => {
-        setBoard(Array(BOARD_SIZE).fill(null).map(() => Array(BOARD_SIZE).fill(EMPTY)));
-        setCurrentPlayer(BLACK);
+      // Start game from setup screen
+      const startGame = useCallback(() => {
+        const { handicapPoints } = getBoardInfo(boardSize);
+        const newBoard = Array(boardSize).fill(null).map(() => Array(boardSize).fill(EMPTY));
+
+        const count = Math.min(handicap, handicapPoints.length);
+        for (let i = 0; i < count; i++) {
+          const { row, col } = handicapPoints[i];
+          newBoard[row][col] = BLACK;
+        }
+
+        setBoard(newBoard);
+        setCurrentPlayer(handicap > 0 ? WHITE : BLACK);
         setCaptures({ black: 0, white: 0 });
         setPreviousBoard(null);
         setConsecutivePasses(0);
@@ -368,6 +409,14 @@
         setShowPassConfirm(false);
         setFinalScore(null);
         setHistory([]);
+      }, [boardSize, handicap]);
+
+      // Return to setup menu
+      const goToSetup = useCallback(() => {
+        setGamePhase(SETUP);
+        setHistory([]);
+        setFinalScore(null);
+        setShowPassConfirm(false);
       }, []);
 
       // Handle intersection click
@@ -379,29 +428,120 @@
         }
       }, [gamePhase, placeStone, toggleDeadStone]);
 
-      // Generate star points for the board
-      const starPoints = useMemo(() => {
-        // For 9x9 board, star points at corners (2,2) and center (4,4)
-        return [
-          { row: 2, col: 2 },
-          { row: 2, col: 6 },
-          { row: 6, col: 2 },
-          { row: 6, col: 6 },
-          { row: 4, col: 4 }
-        ];
-      }, []);
+      // Star points for the current board size
+      const { starPoints } = useMemo(() => getBoardInfo(boardSize), [boardSize]);
 
-      // Board dimensions
+      // Board dimensions — scale cell size to fit screen
       const BOARD_PADDING = 24;
-      const CELL_SIZE = 40;
-      const STONE_SIZE = 36;
-      const GRID_SIZE = CELL_SIZE * (BOARD_SIZE - 1);
+      const CELL_SIZE = boardSize === 9 ? 40 : 32;
+      const STONE_SIZE = boardSize === 9 ? 36 : 28;
+      const GRID_SIZE = CELL_SIZE * (boardSize - 1);
       const BOARD_TOTAL_SIZE = GRID_SIZE + (BOARD_PADDING * 2);
 
+      const BG_STYLE = { background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)' };
+
+      // ─── SETUP SCREEN ───────────────────────────────────────────────────────────
+      if (gamePhase === SETUP) {
+        return (
+          <div className="min-h-screen flex flex-col items-center justify-center p-4" style={BG_STYLE}>
+            <div className="w-full max-w-sm">
+              <h1 className="text-3xl font-bold text-center text-amber-100 tracking-wider mb-8" style={{
+                fontFamily: "'Noto Serif', Georgia, serif",
+                textShadow: '2px 2px 4px rgba(0,0,0,0.5)'
+              }}>
+                碁 Go
+              </h1>
+
+              <div className="bg-black/30 rounded-2xl p-6 space-y-7">
+
+                {/* Board Size */}
+                <div>
+                  <p className="text-amber-200/70 text-xs font-semibold mb-3 tracking-widest uppercase">Board Size</p>
+                  <div className="flex gap-3">
+                    {[9, 13].map(size => (
+                      <button
+                        key={size}
+                        onClick={() => setBoardSize(size)}
+                        className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all shadow-lg ${
+                          boardSize === size
+                            ? 'bg-amber-700 text-white ring-2 ring-amber-400'
+                            : 'bg-slate-700/80 text-slate-200 hover:bg-slate-600'
+                        }`}
+                      >
+                        {size}×{size}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Komi */}
+                <div>
+                  <p className="text-amber-200/70 text-xs font-semibold mb-3 tracking-widest uppercase">Komi</p>
+                  <div className="flex gap-3">
+                    {[0.5, 6.5].map(k => (
+                      <button
+                        key={k}
+                        onClick={() => setKomi(k)}
+                        className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all shadow-lg ${
+                          komi === k
+                            ? 'bg-amber-700 text-white ring-2 ring-amber-400'
+                            : 'bg-slate-700/80 text-slate-200 hover:bg-slate-600'
+                        }`}
+                      >
+                        {k}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Handicap */}
+                <div>
+                  <div className="flex justify-between items-center mb-3">
+                    <p className="text-amber-200/70 text-xs font-semibold tracking-widest uppercase">Handicap</p>
+                    <span className="text-amber-300 text-sm font-bold">
+                      {handicap === 0 ? 'None' : `${handicap} stone${handicap > 1 ? 's' : ''}`}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="9"
+                    value={handicap}
+                    onChange={e => setHandicap(Number(e.target.value))}
+                    className="w-full accent-amber-500"
+                  />
+                  <div className="flex justify-between text-amber-200/40 text-xs mt-1 px-0.5">
+                    <span>0</span>
+                    <span>9</span>
+                  </div>
+                  {handicap > 0 && (
+                    <p className="text-amber-200/50 text-xs mt-2 text-center">
+                      Black starts with {handicap} stone{handicap > 1 ? 's' : ''} placed — White plays first
+                    </p>
+                  )}
+                </div>
+
+                {/* Start Game */}
+                <button
+                  onClick={startGame}
+                  className="w-full py-3 bg-amber-700 hover:bg-amber-600 text-white rounded-lg transition-all font-medium shadow-lg text-base tracking-wide"
+                >
+                  Start Game
+                </button>
+              </div>
+
+              <div className="mt-5 text-amber-200/30 text-xs text-center">
+                Japanese Rules
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // ─── GAME SCREEN ────────────────────────────────────────────────────────────
       return (
-        <div className="min-h-screen flex flex-col items-center justify-center p-4" style={{
-          background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)'
-        }}>
+        <div className="min-h-screen flex flex-col items-center justify-center p-4" style={BG_STYLE}>
+
           {/* Header */}
           <div className="w-full max-w-md mb-4">
             <h1 className="text-2xl font-bold text-center text-amber-100 tracking-wider" style={{
@@ -434,11 +574,11 @@
               </div>
             </div>
 
-            {/* Turn/Phase Indicator */}
+            {/* Turn / Phase indicator */}
             <div className="mt-2 text-center">
               {gamePhase === PLAYING && (
                 <p className="text-amber-200 text-sm">
-                  {currentPlayer === BLACK ? "Black" : "White"}'s turn
+                  {currentPlayer === BLACK ? 'Black' : 'White'}'s turn
                 </p>
               )}
               {gamePhase === STONE_REMOVAL && (
@@ -447,15 +587,13 @@
                 </p>
               )}
               {gamePhase === GAME_OVER && (
-                <p className="text-amber-400 text-sm font-bold">
-                  Game Over
-                </p>
+                <p className="text-amber-400 text-sm font-bold">Game Over</p>
               )}
             </div>
           </div>
 
-          {/* Board Container */}
-          <div 
+          {/* Board */}
+          <div
             className="relative rounded-xl shadow-2xl"
             style={{
               width: BOARD_TOTAL_SIZE,
@@ -464,7 +602,7 @@
               boxShadow: '0 20px 50px rgba(0,0,0,0.5), inset 0 2px 10px rgba(255,255,255,0.2)'
             }}
           >
-            {/* Wood grain texture overlay */}
+            {/* Wood grain overlay */}
             <div className="absolute inset-0 rounded-xl opacity-20 pointer-events-none" style={{
               backgroundImage: `repeating-linear-gradient(
                 90deg,
@@ -476,56 +614,28 @@
             }} />
 
             {/* SVG Grid */}
-            <svg 
+            <svg
               className="absolute pointer-events-none"
-              style={{
-                left: BOARD_PADDING,
-                top: BOARD_PADDING,
-                width: GRID_SIZE,
-                height: GRID_SIZE
-              }}
+              style={{ left: BOARD_PADDING, top: BOARD_PADDING, width: GRID_SIZE, height: GRID_SIZE }}
             >
-              {/* Horizontal lines */}
-              {Array.from({ length: BOARD_SIZE }).map((_, i) => (
-                <line
-                  key={`h-${i}`}
-                  x1="0"
-                  y1={i * CELL_SIZE}
-                  x2={GRID_SIZE}
-                  y2={i * CELL_SIZE}
-                  stroke="#4a3728"
-                  strokeWidth="1"
-                />
+              {Array.from({ length: boardSize }).map((_, i) => (
+                <line key={`h-${i}`} x1="0" y1={i * CELL_SIZE} x2={GRID_SIZE} y2={i * CELL_SIZE}
+                  stroke="#4a3728" strokeWidth="1" />
               ))}
-              {/* Vertical lines */}
-              {Array.from({ length: BOARD_SIZE }).map((_, i) => (
-                <line
-                  key={`v-${i}`}
-                  x1={i * CELL_SIZE}
-                  y1="0"
-                  x2={i * CELL_SIZE}
-                  y2={GRID_SIZE}
-                  stroke="#4a3728"
-                  strokeWidth="1"
-                />
+              {Array.from({ length: boardSize }).map((_, i) => (
+                <line key={`v-${i}`} x1={i * CELL_SIZE} y1="0" x2={i * CELL_SIZE} y2={GRID_SIZE}
+                  stroke="#4a3728" strokeWidth="1" />
               ))}
-              {/* Star points */}
               {starPoints.map(({ row, col }) => (
-                <circle
-                  key={`star-${row}-${col}`}
-                  cx={col * CELL_SIZE}
-                  cy={row * CELL_SIZE}
-                  r="4"
-                  fill="#4a3728"
-                />
+                <circle key={`star-${row}-${col}`}
+                  cx={col * CELL_SIZE} cy={row * CELL_SIZE} r="4" fill="#4a3728" />
               ))}
             </svg>
 
-            {/* Clickable intersections and stones */}
+            {/* Intersections + stones */}
             {board.map((row, rowIndex) =>
               row.map((cell, colIndex) => {
                 const isDead = markedDead.has(`${rowIndex},${colIndex}`);
-                
                 return (
                   <div
                     key={`${rowIndex}-${colIndex}`}
@@ -538,7 +648,6 @@
                       height: CELL_SIZE
                     }}
                   >
-                    {/* Stone */}
                     {cell && (
                       <div
                         className={`rounded-full transition-all duration-200 flex items-center justify-center ${
@@ -556,7 +665,6 @@
                           border: cell === BLACK ? '1px solid #333' : '1px solid #bbb'
                         }}
                       >
-                        {/* Dead stone X marker */}
                         {isDead && (
                           <span className="text-red-500 font-bold text-xl" style={{
                             textShadow: '0 0 4px rgba(255,0,0,0.5)'
@@ -573,7 +681,7 @@
           {/* Controls */}
           <div className="w-full max-w-md mt-4 px-2">
             {gamePhase === PLAYING && (
-              <div className="flex gap-3 justify-center">
+              <div className="flex gap-3 justify-center flex-wrap">
                 {!showPassConfirm ? (
                   <button
                     onClick={() => setShowPassConfirm(true)}
@@ -584,16 +692,12 @@
                 ) : (
                   <div className="flex items-center gap-2 bg-amber-900/60 px-4 py-2 rounded-lg">
                     <span className="text-amber-100 text-sm">Pass turn?</span>
-                    <button
-                      onClick={handlePass}
-                      className="px-4 py-1 bg-green-700 hover:bg-green-600 text-white rounded text-sm"
-                    >
+                    <button onClick={handlePass}
+                      className="px-4 py-1 bg-green-700 hover:bg-green-600 text-white rounded text-sm">
                       Yes
                     </button>
-                    <button
-                      onClick={() => setShowPassConfirm(false)}
-                      className="px-4 py-1 bg-red-700 hover:bg-red-600 text-white rounded text-sm"
-                    >
+                    <button onClick={() => setShowPassConfirm(false)}
+                      className="px-4 py-1 bg-red-700 hover:bg-red-600 text-white rounded text-sm">
                       No
                     </button>
                   </div>
@@ -606,7 +710,7 @@
                   Undo
                 </button>
                 <button
-                  onClick={newGame}
+                  onClick={goToSetup}
                   className="px-6 py-2 bg-slate-700/80 hover:bg-slate-600 text-slate-100 rounded-lg transition-all text-sm font-medium shadow-lg"
                 >
                   New Game
@@ -634,7 +738,7 @@
                     Finalize Score
                   </button>
                   <button
-                    onClick={newGame}
+                    onClick={goToSetup}
                     className="px-6 py-2 bg-slate-700/80 hover:bg-slate-600 text-slate-100 rounded-lg transition-all text-sm font-medium shadow-lg"
                   >
                     New Game
@@ -645,20 +749,17 @@
 
             {gamePhase === GAME_OVER && finalScore && (
               <div className="bg-black/40 rounded-xl p-4 backdrop-blur-sm">
-                {/* Winner Banner */}
                 <div className="text-center mb-4">
                   <p className="text-2xl font-bold text-amber-300" style={{
                     fontFamily: "'Noto Serif', Georgia, serif"
                   }}>
-                    {finalScore.winner === 'tie' 
-                      ? '🤝 Tie Game!' 
+                    {finalScore.winner === 'tie'
+                      ? '🤝 Tie Game!'
                       : `${finalScore.winner === BLACK ? '⚫ Black' : '⚪ White'} Wins!`}
                   </p>
                 </div>
 
-                {/* Score Details */}
                 <div className="grid grid-cols-2 gap-4 text-sm mb-4">
-                  {/* Black Score */}
                   <div className="bg-gray-900/50 rounded-lg p-3">
                     <div className="flex items-center gap-2 mb-2">
                       <div className="w-4 h-4 rounded-full bg-gradient-to-br from-gray-700 to-black" />
@@ -673,7 +774,6 @@
                     </div>
                   </div>
 
-                  {/* White Score */}
                   <div className="bg-gray-100/10 rounded-lg p-3">
                     <div className="flex items-center gap-2 mb-2">
                       <div className="w-4 h-4 rounded-full bg-gradient-to-br from-white to-gray-200" />
@@ -699,7 +799,7 @@
                     Undo
                   </button>
                   <button
-                    onClick={newGame}
+                    onClick={goToSetup}
                     className="flex-1 px-6 py-3 bg-amber-700 hover:bg-amber-600 text-white rounded-lg transition-all font-medium shadow-lg"
                   >
                     Play Again
@@ -711,7 +811,7 @@
 
           {/* Footer */}
           <div className="mt-4 text-amber-200/40 text-xs text-center">
-            9×9 • Japanese Rules • Komi {KOMI}
+            {boardSize}×{boardSize} • Japanese Rules • Komi {komi}{handicap > 0 ? ` • H${handicap}` : ''}
           </div>
         </div>
       );
